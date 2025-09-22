@@ -1,29 +1,36 @@
 import os
-
 import aiohttp
-
 from astrbot import logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.core.message.components import Image
 from astrbot.core.platform import MessageType
-from astrbot.core.provider.entities import ProviderRequest, LLMResponse
 
+# 定义下载目录，确保无论插件放在哪里，都能找到正确的路径
+DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downloaded_files')
 
-async def download_image(picture_url, relative_path):
-    # 使用 aiohttp 进行异步请求
-    async with aiohttp.ClientSession() as session:
-        async with session.get(picture_url) as response:
-            if response.status == 200:
+async def download_image(picture_url, save_path):
+    """
+    异步下载图片并保存到指定路径。
+    在保存前会确保目录存在。
+    """
+    try:
+        dir_name = os.path.dirname(save_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
 
-                content = await response.read()
-                # 保存图片到本地
-                with open(relative_path, 'wb') as f:
-                    f.write(content)
-                return True
-            else:
-                return False
-
+        async with aiohttp.ClientSession() as session:
+            async with session.get(picture_url) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    with open(save_path, 'wb') as f:
+                        f.write(content)
+                    return True
+                else:
+                    logger.error(f"图片下载失败，HTTP状态码：{response.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"下载图片时出错: {e}")
+        return False
 
 @register("Convert", "orchidsziyou", "qq表情转化成可以保存的图片", "1.0.0")
 class MyPlugin(Star):
@@ -32,203 +39,97 @@ class MyPlugin(Star):
     
     @filter.command("转换")
     async def convert_command(self, event: AstrMessageEvent):
-        '''这是一个 转换图片格式 指令'''
+        """这是一个转换图片格式指令"""
         event.should_call_llm(False)
         message_chain = event.get_messages()
-        # logger.info(message_chain)
-        # print(message_chain)
+
         for msg in message_chain:
+            # 处理直接发送的图片
             if msg.type == 'Image':
-                PictureID = msg.file
-
-                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-                assert isinstance(event, AiocqhttpMessageEvent)
+                picture_id = msg.file
                 client = event.bot
-                payloads2 = {
-                    "file_id": PictureID
-                }
-                response = await client.api.call_action('get_image', **payloads2)  # 调用 协议端  API
-                # print(response)
-                localdiskpath = response['file']
-
-                abs_history_json_path = os.path.abspath(localdiskpath)
-                print(abs_history_json_path)
-                file_url = f'file://{abs_history_json_path}'
-
+                
+                # 获取图片本地路径
+                response = await client.api.call_action('get_image', file_id=picture_id)
+                local_disk_path = response['file']
+                abs_path = os.path.abspath(local_disk_path)
+                
+                # 根据文件后缀确定文件名
                 filename = ""
-
-                if abs_history_json_path.endswith(".jpg"):
+                if abs_path.endswith(".jpg"):
                     filename = "图片.jpg"
-                if abs_history_json_path.endswith(".png"):
+                elif abs_path.endswith(".png"):
                     filename = "图片.png"
-                if abs_history_json_path.endswith(".gif"):
+                elif abs_path.endswith(".gif"):
                     filename = "图片.gif"
 
-                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-                assert isinstance(event, AiocqhttpMessageEvent)
+                file_url = f'file://{abs_path}'
 
+                # 发送文件给用户或群组
                 if event.get_message_type() == MessageType.FRIEND_MESSAGE:
                     user_id = event.get_sender_id()
-                    client = event.bot
-                    payloads2 = {
-                        "user_id": user_id,
-                        "message": [
-                            {
-                                "type": "file",
-                                "data": {
-                                    "file": file_url,
-                                    "name": filename
-                                }
-                            }
-                        ]
-                    }
-                    await client.api.call_action('send_private_msg', **payloads2)  # 调用 协议端  API
-                if event.get_message_type() == MessageType.GROUP_MESSAGE:
+                    payloads = {"user_id": user_id, "message": [{"type": "file", "data": {"file": file_url, "name": filename}}]}
+                    await client.api.call_action('send_private_msg', **payloads)
+                elif event.get_message_type() == MessageType.GROUP_MESSAGE:
                     group_id = event.get_group_id()
-                    client = event.bot
-                    payloads2 = {
-                        "group_id": group_id,
-                        "message": [
-                            {
-                                "type": "file",
-                                "data": {
-                                    "file": file_url,
-                                    "name": filename
-                                }
-                            }
-                        ]
-                    }
-                    await client.api.call_action('send_group_msg', **payloads2)  # 调用 协议端
-                    event.stop_event()
-                    return
+                    payloads = {"group_id": group_id, "message": [{"type": "file", "data": {"file": file_url, "name": filename}}]}
+                    await client.api.call_action('send_group_msg', **payloads)
+                
+                event.stop_event()
+                return
+
+            # 处理引用的图片
             elif msg.type == 'Reply':
-                # print(msg)
-                # 处理回复消息
-                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-                assert isinstance(event, AiocqhttpMessageEvent)
                 client = event.bot
-                payload = {
-                    "message_id": msg.id
-                }
-                response = await client.api.call_action('get_msg', **payload)  # 调用 协议端  API
+                payload = {"message_id": msg.id}
+                response = await client.api.call_action('get_msg', **payload)
                 reply_msg = response['message']
-                for msg in reply_msg:
-                    # print(msg)
-                    if msg['type'] == 'image':
-                        # 官方表情没办法保存
-                        picture_url = msg['data']['url']
-                        print(picture_url)
-                        relative_path = './data/plugins/astrbot_plugins_ConvetPicture/downloaded_image.jpg'
+                
+                for m in reply_msg:
+                    if m['type'] == 'image':
+                        picture_url = m['data']['url']
+                        
+                        # 官方表情无法直接通过文件ID获取，需要下载
                         if "/club/item/" in picture_url:
-                            result = await download_image(picture_url,relative_path)
+                            save_path = os.path.join(DOWNLOAD_DIR, 'downloaded_image.jpg')
+                            result = await download_image(picture_url, save_path)
                             if result:
-                                current_directory = os.getcwd()
-                                absolute_path = os.path.join(current_directory, relative_path)
-
-                                file_url = f'file://{absolute_path}'
-
-                                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import \
-                                    AiocqhttpMessageEvent
-                                assert isinstance(event, AiocqhttpMessageEvent)
+                                file_url = f'file://{save_path}'
                                 if event.get_message_type() == MessageType.FRIEND_MESSAGE:
                                     user_id = event.get_sender_id()
-                                    client = event.bot
-                                    payloads2 = {
-                                        "user_id": user_id,
-                                        "message": [
-                                            {
-                                                "type": "file",
-                                                "data": {
-                                                    "file": file_url,
-                                                    "name": "图片.jpg"
-                                                }
-                                            }
-                                        ]
-                                    }
-                                    await client.api.call_action('send_private_msg', **payloads2)  # 调用 协议端  API
-                                if event.get_message_type() == MessageType.GROUP_MESSAGE:
+                                    payloads = {"user_id": user_id, "message": [{"type": "file", "data": {"file": file_url, "name": "图片.jpg"}}]}
+                                    await client.api.call_action('send_private_msg', **payloads)
+                                elif event.get_message_type() == MessageType.GROUP_MESSAGE:
                                     group_id = event.get_group_id()
-                                    client = event.bot
-                                    payloads2 = {
-                                        "group_id": group_id,
-                                        "message": [
-                                            {
-                                                "type": "file",
-                                                "data": {
-                                                    "file": file_url,
-                                                    "name": "图片.jpg"
-                                                }
-                                            }
-                                        ]
-                                    }
-                                    await client.api.call_action('send_group_msg', **payloads2)  # 调用 协议端
-
-                                # chain = [
-                                #     Image.fromFileSystem('./data/plugins/astrbot_plugins_ConvetPicture/downloaded_image.jpg')
-                                # ]
-                                # yield event.chain_result(chain)
+                                    payloads = {"group_id": group_id, "message": [{"type": "file", "data": {"file": file_url, "name": "图片.jpg"}}]}
+                                    await client.api.call_action('send_group_msg', **payloads)
                             else:
                                 yield event.plain_result("图片下载失败")
-                            event.stop_event()
-                            return
-                        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import \
-                            AiocqhttpMessageEvent
-                        assert isinstance(event, AiocqhttpMessageEvent)
-                        client = event.bot
-                        payloads2 = {
-                            "file_id": msg['data']['file']
-                        }
-                        response = await client.api.call_action('get_image', **payloads2)  # 调用 协议端  API
-                        localdiskpath = response['file']
+                        else:
+                            # 非官方表情，直接通过文件ID获取
+                            picture_id = m['data']['file']
+                            response = await client.api.call_action('get_image', file_id=picture_id)
+                            local_disk_path = response['file']
+                            abs_path = os.path.abspath(local_disk_path)
+                            
+                            filename = ""
+                            if abs_path.endswith(".jpg"):
+                                filename = "图片.jpg"
+                            elif abs_path.endswith(".png"):
+                                filename = "图片.png"
+                            elif abs_path.endswith(".gif"):
+                                filename = "图片.gif"
 
-                        abs_history_json_path = os.path.abspath(localdiskpath)
-                        print(abs_history_json_path)
-                        file_url = f'file://{abs_history_json_path}'
+                            file_url = f'file://{abs_path}'
 
-                        filename = ""
+                            if event.get_message_type() == MessageType.FRIEND_MESSAGE:
+                                user_id = event.get_sender_id()
+                                payloads = {"user_id": user_id, "message": [{"type": "file", "data": {"file": file_url, "name": filename}}]}
+                                await client.api.call_action('send_private_msg', **payloads)
+                            elif event.get_message_type() == MessageType.GROUP_MESSAGE:
+                                group_id = event.get_group_id()
+                                payloads = {"group_id": group_id, "message": [{"type": "file", "data": {"file": file_url, "name": filename}}]}
+                                await client.api.call_action('send_group_msg', **payloads)
 
-                        if abs_history_json_path.endswith(".jpg"):
-                            filename = "图片.jpg"
-                        if abs_history_json_path.endswith(".png"):
-                            filename = "图片.png"
-                        if abs_history_json_path.endswith(".gif"):
-                            filename = "图片.gif"
-
-                        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import \
-                            AiocqhttpMessageEvent
-                        assert isinstance(event, AiocqhttpMessageEvent)
-                        if event.get_message_type() == MessageType.FRIEND_MESSAGE:
-                            user_id = event.get_sender_id()
-                            client = event.bot
-                            payloads2 = {
-                                "user_id": user_id,
-                                "message": [
-                                    {
-                                        "type": "file",
-                                        "data": {
-                                            "file": file_url,
-                                            "name": filename
-                                        }
-                                    }
-                                ]
-                            }
-                            await client.api.call_action('send_private_msg', **payloads2)  # 调用 协议端  API
-                        if event.get_message_type() == MessageType.GROUP_MESSAGE:
-                            group_id = event.get_group_id()
-                            client = event.bot
-                            payloads2 = {
-                                "group_id": group_id,
-                                "message": [
-                                    {
-                                        "type": "file",
-                                        "data": {
-                                            "file": file_url,
-                                            "name": filename
-                                        }
-                                    }
-                                ]
-                            }
-                            await client.api.call_action('send_group_msg', **payloads2)  # 调用 协议端
-                            event.stop_event()
-                            return
-
+                        event.stop_event()
+                        return
