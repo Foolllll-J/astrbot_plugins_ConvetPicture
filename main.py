@@ -232,15 +232,3 @@ class MyPlugin(Star):
                             event.stop_event()
                             return
 
-
-    @filter.on_llm_request()
-    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        '''处理来自 LLM 的请求'''
-        event.stop_event()
-        return None
-
-    @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        '''处理来自 LLM 的响应'''
-        event.stop_event()
-        return None
